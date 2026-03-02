@@ -1,0 +1,47 @@
+# ── Training logs & checkpoints (1.2TB+) ────────────────────────
+logdir/
+
+# ── Expert data (582MB, regenerable via collect_data.py) ────────
+dreamerv3-mini/data/
+
+# ── Student model runs (checkpoints, TensorBoard, videos) ──────
+dreamerv3-mini/runs/
+
+# ── Collection logs ─────────────────────────────────────────────
+dreamerv3-mini/logs/
+
+# ── Build artifacts ─────────────────────────────────────────────
+build/
+dreamer.egg-info/
+*.egg-info/
+dist/
+
+# ── Python cache ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Backup directories ─────────────────────────────────────────
+备份dreamerv3-mini*/
+
+# ── Images / screenshots ───────────────────────────────────────
+*.png
+
+# ── Empty files ─────────────────────────────────────────────────
+run_ablation.sh
+
+# ── IDE / editor ────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS files ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Jupyter ─────────────────────────────────────────────────────
+.ipynb_checkpoints/
