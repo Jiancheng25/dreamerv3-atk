@@ -105,6 +105,86 @@ TASK_CONFIGS = {
         'video_fps':     15,            # Crafter is slower-paced
     },
 
+    # ── Crafter 25M teacher (image, discrete) ───────────────────────────
+    'crafter_reward_25m': {
+        'dreamer_config_presets': ['defaults', 'crafter', 'size25m'],
+        'checkpoint_dir': ROOT / 'logdir' / 'dreamer'
+                          / '20260304T042925-crafter-size25m' / 'ckpt',
+
+        'obs_type':   'image',
+        'obs_keys':   None,
+        'img_channels': 3,
+
+        'act_type':   'discrete',
+        'act_dim':    17,
+
+        'env_suite':  'crafter',
+        'env_task':   'reward',
+        'env_kwargs': {'size': (64, 64), 'logs': False},
+
+        'num_episodes':  100,
+        'ep_max_steps':  10000,
+
+        'encoder_type':    'cnn',
+        'student_hidden':  256,
+        'student_blocks':  2,
+        'student_dropout': 0.1,
+        'cnn_channels':    (32, 64, 64),
+
+        'loss_type':    'cross_entropy',
+        'batch_size':   128,
+        'num_epochs':   100,
+        'lr':           3e-4,
+        'weight_decay': 1e-4,
+        'grad_clip':    1.0,
+        'eval_every':   5,
+        'eval_episodes': 5,
+
+        'render_source': 'obs_image',
+        'render_size':   (256, 256),
+        'video_fps':     15,
+    },
+
+    # ── Crafter 100M teacher (image, discrete) ──────────────────────────
+    'crafter_reward_100m': {
+        'dreamer_config_presets': ['defaults', 'crafter', 'size100m'],
+        'checkpoint_dir': ROOT / 'logdir' / 'dreamer'
+                          / '20260304T042953-crafter-size100m' / 'ckpt',
+
+        'obs_type':   'image',
+        'obs_keys':   None,
+        'img_channels': 3,
+
+        'act_type':   'discrete',
+        'act_dim':    17,
+
+        'env_suite':  'crafter',
+        'env_task':   'reward',
+        'env_kwargs': {'size': (64, 64), 'logs': False},
+
+        'num_episodes':  100,
+        'ep_max_steps':  10000,
+
+        'encoder_type':    'cnn',
+        'student_hidden':  256,
+        'student_blocks':  2,
+        'student_dropout': 0.1,
+        'cnn_channels':    (32, 64, 64),
+
+        'loss_type':    'cross_entropy',
+        'batch_size':   128,
+        'num_epochs':   100,
+        'lr':           3e-4,
+        'weight_decay': 1e-4,
+        'grad_clip':    1.0,
+        'eval_every':   5,
+        'eval_episodes': 5,
+
+        'render_source': 'obs_image',
+        'render_size':   (256, 256),
+        'video_fps':     15,
+    },
+
     # ── Atari Pong (image/grayscale, discrete) ────────────────────────────
     'atari_pong': {
         'dreamer_config_presets': ['defaults', 'atari'],
@@ -245,6 +325,133 @@ TASK_CONFIGS = {
         'grad_clip':    1.0,
         'eval_every':   5,
         'eval_episodes': 5,
+
+        'render_source': 'obs_image',
+        'render_size':   (256, 256),
+        'video_fps':     15,
+    },
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  Architecture ablation: Crafter 166M  (ResNet / VGG / Transformer)
+    # ═════════════════════════════════════════════════════════════════════
+
+    # ── Crafter 166M — ResNet encoder ────────────────────────────────────
+    'crafter_reward_resnet': {
+        'dreamer_config_presets': ['defaults', 'crafter'],
+        'checkpoint_dir': ROOT / 'logdir' / 'dreamer'
+                          / '20260120T215532-crafter' / 'ckpt',
+
+        'obs_type':   'image',
+        'obs_keys':   None,
+        'img_channels': 3,
+
+        'act_type':   'discrete',
+        'act_dim':    17,
+
+        'env_suite':  'crafter',
+        'env_task':   'reward',
+        'env_kwargs': {'size': (64, 64), 'logs': False},
+
+        'num_episodes':  100,
+        'ep_max_steps':  10000,
+
+        'encoder_type':    'resnet',
+        'student_hidden':  512,
+        'student_blocks':  3,
+        'student_dropout': 0.1,
+        'cnn_channels':    (32, 64, 64),
+
+        'loss_type':    'cross_entropy',
+        'batch_size':   128,
+        'num_epochs':   100,
+        'lr':           3e-4,
+        'weight_decay': 1e-4,
+        'grad_clip':    1.0,
+        'eval_every':   5,
+        'eval_episodes': 20,
+
+        'render_source': 'obs_image',
+        'render_size':   (256, 256),
+        'video_fps':     15,
+    },
+
+    # ── Crafter 166M — VGG encoder ───────────────────────────────────────
+    'crafter_reward_vgg': {
+        'dreamer_config_presets': ['defaults', 'crafter'],
+        'checkpoint_dir': ROOT / 'logdir' / 'dreamer'
+                          / '20260120T215532-crafter' / 'ckpt',
+
+        'obs_type':   'image',
+        'obs_keys':   None,
+        'img_channels': 3,
+
+        'act_type':   'discrete',
+        'act_dim':    17,
+
+        'env_suite':  'crafter',
+        'env_task':   'reward',
+        'env_kwargs': {'size': (64, 64), 'logs': False},
+
+        'num_episodes':  100,
+        'ep_max_steps':  10000,
+
+        'encoder_type':    'vgg',
+        'student_hidden':  512,
+        'student_blocks':  3,
+        'student_dropout': 0.1,
+        'cnn_channels':    (32, 64, 64),
+
+        'loss_type':    'cross_entropy',
+        'batch_size':   128,
+        'num_epochs':   100,
+        'lr':           3e-4,
+        'weight_decay': 1e-4,
+        'grad_clip':    1.0,
+        'eval_every':   5,
+        'eval_episodes': 20,
+
+        'render_source': 'obs_image',
+        'render_size':   (256, 256),
+        'video_fps':     15,
+    },
+
+    # ── Crafter 166M — Transformer (ViT) encoder ────────────────────────
+    'crafter_reward_transformer': {
+        'dreamer_config_presets': ['defaults', 'crafter'],
+        'checkpoint_dir': ROOT / 'logdir' / 'dreamer'
+                          / '20260120T215532-crafter' / 'ckpt',
+
+        'obs_type':   'image',
+        'obs_keys':   None,
+        'img_channels': 3,
+
+        'act_type':   'discrete',
+        'act_dim':    17,
+
+        'env_suite':  'crafter',
+        'env_task':   'reward',
+        'env_kwargs': {'size': (64, 64), 'logs': False},
+
+        'num_episodes':  100,
+        'ep_max_steps':  10000,
+
+        'encoder_type':    'transformer',
+        'student_hidden':  512,
+        'student_blocks':  3,
+        'student_dropout': 0.1,
+        'vit_patch_size':  8,
+        'vit_embed_dim':   256,
+        'vit_num_heads':   4,
+        'vit_num_layers':  4,
+
+        'loss_type':    'cross_entropy',
+        'batch_size':   128,
+        'num_epochs':   100,
+        'lr':           3e-4,
+        'weight_decay': 1e-4,
+        'grad_clip':    1.0,
+        'eval_every':   5,
+        'eval_episodes': 20,
 
         'render_source': 'obs_image',
         'render_size':   (256, 256),

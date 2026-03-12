@@ -13,7 +13,7 @@
 conda activate dreamerv3
 
 # All commands below assume you are in the dreamerv3-main root
-cd /home/manager/wjc/dreamerv3-main
+cd dreamerv3-main  # or your project root
 ```
 
 ### Step 1 -- Collect expert data

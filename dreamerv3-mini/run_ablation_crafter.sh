@@ -31,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT"
 
-PYTHON="/home/manager/anaconda3/envs/dreamerv3/bin/python"
+PYTHON="python"
 
 TASK="crafter_reward"
 RUN_BASE="dreamerv3-mini/runs/crafter_reward"

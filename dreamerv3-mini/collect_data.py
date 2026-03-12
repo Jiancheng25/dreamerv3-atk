@@ -36,7 +36,13 @@ from dreamerv3.main import make_agent, make_env
 from task_config import parse_task_arg
 
 # ── Parse task ───────────────────────────────────────────────────────────────
-TASK_NAME, TASK_CFG, _ = parse_task_arg()
+import argparse as _argparse
+TASK_NAME, TASK_CFG, _remaining = parse_task_arg()
+
+_ep_parser = _argparse.ArgumentParser(add_help=False)
+_ep_parser.add_argument('--num_episodes', type=int, default=None,
+                        help='Override num_episodes from task_config')
+_ep_args, _ = _ep_parser.parse_known_args(_remaining)
 
 # ── Directories ──────────────────────────────────────────────────────────────
 OUT_DIR  = ROOT / 'dreamerv3-mini'
@@ -44,7 +50,7 @@ DATA_DIR = OUT_DIR / 'data'
 LOG_DIR  = OUT_DIR / 'logs' / 'teacher_eval'
 
 CKPT_DIR     = TASK_CFG['checkpoint_dir']
-NUM_EPISODES = TASK_CFG['num_episodes']
+NUM_EPISODES = _ep_args.num_episodes if _ep_args.num_episodes is not None else TASK_CFG['num_episodes']
 MIN_SCORE    = 0.0
 EP_MAX_STEPS = TASK_CFG['ep_max_steps']
 
@@ -431,7 +437,8 @@ def main():
         logits_arr = np.array(all_logits, dtype=np.float32)
 
     # ── Save ──────────────────────────────────────────────────────────────
-    save_path = str(DATA_DIR / f'teacher_data_{TASK_NAME}.npz')
+    _ep_suffix = f'_{NUM_EPISODES}eps' if _ep_args.num_episodes is not None else ''
+    save_path = str(DATA_DIR / f'teacher_data_{TASK_NAME}{_ep_suffix}.npz')
     save_dict = dict(
         obs=obs_arr,
         act=act_arr,

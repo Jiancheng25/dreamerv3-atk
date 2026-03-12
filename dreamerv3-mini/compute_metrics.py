@@ -2,16 +2,16 @@
 """
 Compute the 3-layer evaluation metrics for student models.
 
-Layer A — Predictive Fidelity (预测一致性):
+Layer A — Predictive Fidelity (Predictive Fidelity):
   - 1-step Error:  Action prediction error on held-out test data     (↓)
   - Multi-step Rollout Error (k=2, k=5): Cumulative reward gap      (↓)
 
-Layer B — Substitutability (功能替代性) [discrete tasks]:
+Layer B — Substitutability (Functional Substitutability) [discrete tasks]:
   - Ranker NDCG:   Action-ranking quality vs teacher                 (↑)
   - Top-1 Hit:     Fraction where student picks same action          (↑)
   - Kendall τ:     Rank correlation of action preferences            (↑)
 
-Layer C — End-task Performance (最终任务结果):
+Layer C — End-task Performance (Final Task Performance):
   - Score:  Best eval score from training (from checkpoint)          (↑)
 
 Usage:
@@ -50,8 +50,8 @@ from task_config import TASK_CONFIGS
 VARIANTS = ['baseline', 'A', 'B', 'AB']
 VARIANT_LABELS = {
     'baseline': 'Baseline (MSE/CE)',
-    'A':        'A-only (分布拟合NLL)',
-    'B':        'B-only (价值加权)',
+    'A':        'A-only (Distribution Fit NLL)',
+    'B':        'B-only (Value-Weighted)',
     'AB':       'Ours (A+B)',
 }
 
@@ -76,6 +76,12 @@ def parse_args():
     ap.add_argument('--task', required=True, choices=list(TASK_CONFIGS.keys()))
     ap.add_argument('--batch_size', type=int, default=512,
                     help='Batch size for model inference')
+    ap.add_argument('--variants', nargs='+', default=None,
+                    help='Override which variant sub-dirs to evaluate '
+                         '(e.g. --variants AB_v1 AB_v2 AB_v3)')
+    ap.add_argument('--data_path', default=None, type=str,
+                    help='Override path to teacher data .npz file for evaluation. '
+                         'If not set, uses data/teacher_data_{task}.npz')
     return ap.parse_args()
 
 
@@ -401,8 +407,10 @@ def _fv(v, fmt='.4f'):
     return f'{v:{fmt}}'
 
 
-def print_table(task_name, results, is_discrete):
+def print_table(task_name, results, is_discrete, eval_variants=None):
     """Print the evaluation matrix table."""
+    if eval_variants is None:
+        eval_variants = VARIANTS
     if is_discrete:
         col_names = ['score', 'k=1 Err(↓)', 'k=2 Err(↓)', 'k=5 Err(↓)',
                      'NDCG(↑)', 'Top1 Hit(↑)', 'Kendall τ(↑)']
@@ -421,7 +429,7 @@ def print_table(task_name, results, is_discrete):
     hline = '─' * lw + '┼' + ('─' * cw + '┼') * (ncols - 1) + '─' * cw
 
     print(f"\n{'═' * (lw + ncols * (cw + 1))}")
-    print(f"  学生模型评估矩阵 — {task_name}")
+    print(f"  Student Model Evaluation Matrix — {task_name}")
     print(f"{'═' * (lw + ncols * (cw + 1))}")
 
     # Header
@@ -432,9 +440,9 @@ def print_table(task_name, results, is_discrete):
     print(hline)
 
     # Rows
-    for v in VARIANTS:
+    for v in eval_variants:
         r = results.get(v)
-        label = VARIANT_LABELS[v]
+        label = VARIANT_LABELS.get(v, v)
         print(f' {label:<{lw - 1}s} │', end='')
         if r is None:
             for _ in col_names:
@@ -452,12 +460,12 @@ def print_table(task_name, results, is_discrete):
     if base is None:
         return
 
-    print(f"\n  相对 Baseline 提升 (↑ for score/NDCG/Hit/τ, ↓ for errors):")
-    for v in ['A', 'B', 'AB']:
+    print(f"\n  Relative Improvement over Baseline (↑ for score/NDCG/Hit/τ, ↓ for errors):")
+    for v in [x for x in eval_variants if x != 'baseline']:
         r = results.get(v)
         if r is None:
             continue
-        parts = [f"  {VARIANT_LABELS[v]:24s}"]
+        parts = [f"  {VARIANT_LABELS.get(v, v):24s}"]
         base_score = base.get('score')
         v_score = r.get('score')
         if base_score and v_score:
@@ -479,8 +487,10 @@ def print_table(task_name, results, is_discrete):
         print('  |  '.join(parts))
 
 
-def print_csv(task_name, results, is_discrete):
+def print_csv(task_name, results, is_discrete, eval_variants=None):
     """Print CSV for pasting into a spreadsheet."""
+    if eval_variants is None:
+        eval_variants = VARIANTS
     if is_discrete:
         cols = ['variant', 'score', 'k1_error', 'k2_error', 'k5_error',
                 'ranker_ndcg', 'top1_hit', 'kendall_tau']
@@ -489,7 +499,7 @@ def print_csv(task_name, results, is_discrete):
 
     print(f"\n--- CSV ({task_name}) ---")
     print(','.join(cols))
-    for v in VARIANTS:
+    for v in eval_variants:
         r = results.get(v)
         if r is None:
             print(f"{v}," + ','*(len(cols)-2))
@@ -522,7 +532,10 @@ def main():
     print(f"{'═' * 70}")
 
     # ── 1. Load expert data ──────────────────────────────────────────────
-    data_path = DATA_DIR / f'teacher_data_{task_name}.npz'
+    if args.data_path:
+        data_path = pathlib.Path(args.data_path)
+    else:
+        data_path = DATA_DIR / f'teacher_data_{task_name}.npz'
     print(f"\nLoading expert data: {data_path}")
     data = np.load(str(data_path), allow_pickle=True)
 
@@ -565,7 +578,8 @@ def main():
     # ── 4. Evaluate each variant ─────────────────────────────────────────
     results = {}
 
-    for variant in VARIANTS:
+    eval_variants = args.variants if args.variants else VARIANTS
+    for variant in eval_variants:
         ckpt_path = RUNS_DIR / run_dir_name / variant / 'best_student.pth'
         if not ckpt_path.exists():
             print(f"\n  [{variant}] checkpoint not found — skipping")
@@ -581,9 +595,9 @@ def main():
 
         r = {'score': score}
         if score is not None:
-            print(f"  C层 Score (from training) : {score:.1f}")
+            print(f"  Layer C Score (from training) : {score:.1f}")
 
-        # ── A层: k-step Rollout Error (k=1, 2, 5) ─────────────────
+        # ── Layer A: k-step Rollout Error (k=1, 2, 5) ─────────────────
         t0 = time.time()
         for k_val in [1, 2, 5]:
             k_mean, k_std = compute_kstep_rollout_error(
@@ -593,11 +607,11 @@ def main():
             r[key] = k_mean
             if k_mean is not None:
                 err_type = 'mismatch' if is_discrete else 'MSE'
-                print(f"  A层 k={k_val} Rollout Error ({err_type}) : "
+                print(f"  Layer A k={k_val} Rollout Error ({err_type}) : "
                       f"{k_mean:.4f} ± {k_std:.4f}")
         print(f"  (A-layer k-step: {time.time() - t0:.1f}s)")
 
-        # ── B层: Substitutability (discrete only) ────────────────────
+        # ── Layer B: Substitutability (discrete only) ────────────────────
         if is_discrete and test_teacher_logits is not None:
             t0 = time.time()
 
@@ -606,15 +620,15 @@ def main():
                 model, test_obs, device, args.batch_size)
 
             hit = compute_top1_hit(student_test_out, test_teacher_logits)
-            print(f"  B层 Top-1 Hit Rate   : {hit:.4f}")
+            print(f"  Layer B Top-1 Hit Rate   : {hit:.4f}")
             r['top1_hit'] = hit
 
             ndcg = compute_ndcg(test_teacher_logits, student_test_out)
-            print(f"  B层 Ranker NDCG      : {ndcg:.4f}")
+            print(f"  Layer B Ranker NDCG      : {ndcg:.4f}")
             r['ranker_ndcg'] = ndcg
 
             tau = compute_kendall_tau(test_teacher_logits, student_test_out)
-            print(f"  B层 Kendall τ        : {tau:.4f}")
+            print(f"  Layer B Kendall τ        : {tau:.4f}")
             r['kendall_tau'] = tau
 
             print(f"  (B-layer: {time.time() - t0:.1f}s)")
@@ -622,14 +636,12 @@ def main():
         results[variant] = r
 
     # ── 5. Output ────────────────────────────────────────────────────────
-    print_table(task_name, results, is_discrete)
-    print_csv(task_name, results, is_discrete)
+    print_table(task_name, results, is_discrete, eval_variants)
+    print_csv(task_name, results, is_discrete, eval_variants)
 
     print(f"\n{'═' * 70}")
     print(f"  Done. Variants evaluated: "
-          f"{', '.join(v for v in VARIANTS if v in results)}")
-    if 'AB' not in results:
-        print(f"  Note: 'Ours (A+B)' not found. Train with --loss_mode AB.")
+          f"{', '.join(v for v in eval_variants if v in results)}")
     print(f"{'═' * 70}")
 
 

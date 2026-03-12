@@ -5,7 +5,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-PYTHON=/home/manager/anaconda3/envs/dreamerv3/bin/python
+PYTHON=python
 SCRIPT=dreamerv3-mini/train_student.py
 TASK=crafter_reward
 

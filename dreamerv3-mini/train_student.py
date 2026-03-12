@@ -69,7 +69,7 @@ from student_model import StudentConfig, StudentPolicy
 import argparse as _ap
 _p = _ap.ArgumentParser()
 _p.add_argument('--loss_mode', default='baseline',
-                choices=['baseline', 'A', 'B', 'AB'])
+                choices=['baseline', 'A', 'B', 'AB', 'OBD'])
 _p.add_argument('--run_name', default=None, type=str)
 _p.add_argument('--output_dir', default=None, type=str,
                 help='Override output directory (absolute or relative to cwd)')
@@ -95,11 +95,16 @@ _p.add_argument('--eval_episodes_override', default=None, type=int,
 _p.add_argument('--data_fraction', default=1.0, type=float,
                 help='Fraction of expert data to use (0.0-1.0). '
                      'Values < 1.0 create a data-limited regime.')
+_p.add_argument('--data_path', default=None, type=str,
+                help='Override path to teacher data .npz file. '
+                     'If not set, default is data/teacher_data_{task}.npz')
 _p.add_argument('--value_weight_temp', default=1.0, type=float,
                 help='Temperature for value-weight sharpening (higher = sharper)')
 _p.add_argument('--kd_temperature', default=1.0, type=float,
                 help='Softmax temperature for soft-label KL distillation in Loss A '
                      '(discrete tasks). >1 softens teacher distribution.')
+_p.add_argument('--seed', default=0, type=int,
+                help='Random seed for reproducibility')
 _EXTRA = _p.parse_args(REMAINING_ARGV)
 LOSS_MODE    = _EXTRA.loss_mode
 RUN_NAME     = _EXTRA.run_name
@@ -112,7 +117,7 @@ OUT_DIR  = ROOT / 'dreamerv3-mini'
 DATA_DIR = OUT_DIR / 'data'
 RUNS_DIR = OUT_DIR / 'runs'
 
-SEED = 0
+SEED = _EXTRA.seed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -465,7 +470,10 @@ def main():
     log.info(f"Device        : {device}")
 
     # ── Load expert data ──────────────────────────────────────────────
-    data_path = DATA_DIR / f'teacher_data_{TASK_NAME}.npz'
+    if _EXTRA.data_path:
+        data_path = pathlib.Path(_EXTRA.data_path)
+    else:
+        data_path = DATA_DIR / f'teacher_data_{TASK_NAME}.npz'
     log.info(f"Data path     : {data_path}")
     data = np.load(str(data_path), allow_pickle=True)
     obs = data['obs']
@@ -527,6 +535,9 @@ def main():
     if LOSS_MODE in ('B', 'AB'):
         log.info(f"Lambda_B      : {LAMBDA_B}")
         log.info(f"VW Temp       : {_EXTRA.value_weight_temp}")
+    if LOSS_MODE == 'OBD':
+        log.info(f"Loss variant  : OBD (Av-PBC — action-value weighted)")
+        log.info(f"Lambda_OBD    : {LAMBDA_B}")
 
     # ── Model ─────────────────────────────────────────────────────────
     config = StudentConfig(
@@ -540,6 +551,10 @@ def main():
         dropout      = task_cfg['student_dropout'],
         cnn_channels = task_cfg.get('cnn_channels'),
         img_channels = task_cfg.get('img_channels', 3),
+        vit_patch_size = task_cfg.get('vit_patch_size', 8),
+        vit_embed_dim  = task_cfg.get('vit_embed_dim', 256),
+        vit_num_heads  = task_cfg.get('vit_num_heads', 4),
+        vit_num_layers = task_cfg.get('vit_num_layers', 4),
     )
     log.info(f"StudentConfig : {config}")
 
@@ -615,7 +630,7 @@ def main():
 
             # ── Forward pass ────────────────────────────────────────
             # For variant A we need (mean, log_std); otherwise just mean
-            if LOSS_MODE in ('A', 'AB') and is_continuous:
+            if LOSS_MODE in ('A', 'AB', 'OBD') and is_continuous:
                 pred, log_std = model.forward_with_log_std(obs_batch)
             else:
                 pred = model(obs_batch)
@@ -686,6 +701,40 @@ def main():
                 loss = loss + LAMBDA_B * L_B
                 L_B_val = L_B.item()
 
+            # ── OBD (Av-PBC): Action-value weighted decision diff ────
+            # Lei et al. (NeurIPS 2024) — Offline Behavior Distillation.
+            # L_OBD = E_s[ sum_a  Q_hat(s,a) * |pi_S(a|s) - pi_T(a|s)| ]
+            # We approximate Q(s,a) ~ V(s) * pi_T(a|s) where V(s) ≈
+            # discount_return (from data), and pi_T = softmax(teacher_logits).
+            # For discrete: action-value weighted L1 over full distribution.
+            L_OBD_val = 0.0
+            if LOSS_MODE == 'OBD':
+                with torch.no_grad():
+                    # Teacher policy distribution
+                    pi_T = torch.softmax(tlogits_batch, dim=-1)  # (B, A)
+                    # V(s) approximation from discount_return
+                    V_s = ret_batch / (return_mean + 1e-8)       # normalise
+                    V_s = V_s.clamp(min=0.01)                    # non-negative
+                    # Q_hat(s,a) ≈ V(s) * pi_T(a|s)
+                    Q_hat = V_s.unsqueeze(-1) * pi_T             # (B, A)
+                if is_continuous:
+                    # Gaussian NLL weighted by V(s)
+                    var = torch.exp(2.0 * log_std)
+                    nll = 0.5 * (1.8378770664093453
+                                 + 2.0 * log_std
+                                 + (act_batch - pred) ** 2 / (var + 1e-8))
+                    w_obd = V_s.clamp(min=0.01, max=20.0)
+                    w_obd = w_obd / (w_obd.mean() + 1e-8)
+                    L_OBD = (w_obd.unsqueeze(-1) * nll).mean()
+                else:
+                    # Student policy distribution
+                    pi_S = torch.softmax(pred, dim=-1)           # (B, A)
+                    # Action-value weighted L1 decision difference
+                    diff = (Q_hat * (pi_S - pi_T).abs()).sum(dim=-1)  # (B,)
+                    L_OBD = diff.mean()
+                loss = loss + LAMBDA_B * L_OBD
+                L_OBD_val = L_OBD.item()
+
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
@@ -695,6 +744,8 @@ def main():
             epoch_loss   += loss.item()
             epoch_loss_A += L_A_val
             epoch_loss_B += L_B_val
+            if LOSS_MODE == 'OBD':
+                epoch_loss_B += L_OBD_val  # reuse B accumulator for OBD
             n_batches    += 1
             global_step  += 1
             writer.add_scalar('train/loss_step', loss.item(), global_step)
@@ -711,6 +762,8 @@ def main():
             writer.add_scalar('train/L_A_nll', avg_LA, epoch)
         if LOSS_MODE in ('B', 'AB'):
             writer.add_scalar('train/L_B_vw', avg_LB, epoch)
+        if LOSS_MODE == 'OBD':
+            writer.add_scalar('train/L_OBD_avpbc', avg_LB, epoch)
 
         line = (f"Epoch {epoch:3d}/{NUM_EPOCHS}  |  "
                 f"loss = {avg_loss:.6f}  |  lr = {lr:.2e}")
@@ -718,6 +771,8 @@ def main():
             line += f"  |  L_A={avg_LA:.4f}"
         if LOSS_MODE in ('B', 'AB'):
             line += f"  |  L_B={avg_LB:.4f}"
+        if LOSS_MODE == 'OBD':
+            line += f"  |  L_OBD={avg_LB:.4f}"
 
         # ── Periodic evaluation ───────────────────────────────────────
         if epoch % EVAL_EVERY == 0 or epoch == NUM_EPOCHS:

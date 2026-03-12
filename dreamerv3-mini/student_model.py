@@ -43,15 +43,21 @@ class StudentConfig:
     act_dim:    int = 6                  # continuous: output dim, discrete: num classes
 
     # Architecture
-    encoder_type: str = 'mlp'            # 'mlp' | 'cnn'
+    encoder_type: str = 'mlp'            # 'mlp' | 'cnn' | 'resnet' | 'vgg' | 'transformer'
     hidden:     int = 512
     blocks:     int = 4
     dropout:    float = 0.1
 
-    # CNN-specific
+    # CNN-specific (shared by cnn / resnet / vgg)
     cnn_channels: Optional[Tuple[int, ...]] = None   # e.g. (32, 64, 64)
     cnn_kernel:   int = 3
     img_channels: int = 3                             # 1 for grayscale, 3 for RGB
+
+    # Transformer-specific
+    vit_patch_size: int = 8
+    vit_embed_dim:  int = 256
+    vit_num_heads:  int = 4
+    vit_num_layers: int = 4
 
 
 class ResBlock(nn.Module):
@@ -100,6 +106,151 @@ class ImageEncoder(nn.Module):
         return x.flatten(1)               # (B, out_dim)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+#  ResNet Encoder  (Conv + Residual connections in conv layers)
+# ═════════════════════════════════════════════════════════════════════════════
+class _ResConvBlock(nn.Module):
+    """Residual conv block: Conv→BN→SiLU→Conv→BN + skip."""
+
+    def __init__(self, channels: int, kernel: int = 3):
+        super().__init__()
+        pad = kernel // 2
+        self.net = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel, padding=pad),
+            nn.BatchNorm2d(channels),
+            nn.SiLU(),
+            nn.Conv2d(channels, channels, kernel, padding=pad),
+            nn.BatchNorm2d(channels),
+        )
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        return self.act(x + self.net(x))
+
+
+class ResNetEncoder(nn.Module):
+    """ResNet-style image encoder: (B,H,W,C) uint8 -> (B, out_dim) float32.
+
+    Structure: stem Conv(stride=2) → [ResConvBlock + downsample] × 3
+    Matches the same spatial downsampling as ImageEncoder (64→32→16→8).
+    """
+
+    def __init__(self, channels: Tuple[int, ...] = (32, 64, 64),
+                 kernel: int = 3, in_channels: int = 3):
+        super().__init__()
+        layers = []
+        in_ch = in_channels
+        for out_ch in channels:
+            # Downsample conv (stride=2)
+            layers.append(nn.Conv2d(in_ch, out_ch, kernel, stride=2,
+                                    padding=kernel // 2))
+            layers.append(nn.BatchNorm2d(out_ch))
+            layers.append(nn.SiLU())
+            # Residual block (preserves spatial size)
+            layers.append(_ResConvBlock(out_ch, kernel))
+            in_ch = out_ch
+        self.convnet = nn.Sequential(*layers)
+        self.out_dim = channels[-1] * 8 * 8  # 64→32→16→8
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.float() / 255.0
+        x = x.permute(0, 3, 1, 2)
+        x = self.convnet(x)
+        return x.flatten(1)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  VGG Encoder  (Deep stacked Conv, NO skip connections)
+# ═════════════════════════════════════════════════════════════════════════════
+class VGGEncoder(nn.Module):
+    """VGG-style image encoder: (B,H,W,C) uint8 -> (B, out_dim) float32.
+
+    Structure: [Conv→BN→SiLU, Conv→BN→SiLU, MaxPool] × 3 stages.
+    No residual connections — pure feed-forward convolutions.
+    """
+
+    def __init__(self, channels: Tuple[int, ...] = (32, 64, 64),
+                 kernel: int = 3, in_channels: int = 3):
+        super().__init__()
+        layers = []
+        in_ch = in_channels
+        for out_ch in channels:
+            # Two conv layers per stage (VGG-style)
+            layers.extend([
+                nn.Conv2d(in_ch, out_ch, kernel, padding=kernel // 2),
+                nn.BatchNorm2d(out_ch),
+                nn.SiLU(),
+                nn.Conv2d(out_ch, out_ch, kernel, padding=kernel // 2),
+                nn.BatchNorm2d(out_ch),
+                nn.SiLU(),
+                nn.MaxPool2d(2, 2),  # halve spatial dims
+            ])
+            in_ch = out_ch
+        self.convnet = nn.Sequential(*layers)
+        self.out_dim = channels[-1] * 8 * 8  # 64→32→16→8
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.float() / 255.0
+        x = x.permute(0, 3, 1, 2)
+        x = self.convnet(x)
+        return x.flatten(1)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Transformer (ViT-style) Encoder
+# ═════════════════════════════════════════════════════════════════════════════
+class TransformerEncoder(nn.Module):
+    """ViT-style image encoder: (B,H,W,C) uint8 -> (B, out_dim) float32.
+
+    Structure: split into patches → Linear embedding → positional embedding
+               → Transformer encoder layers → mean-pool → Linear projection.
+    """
+
+    def __init__(self, img_size: int = 64, patch_size: int = 8,
+                 in_channels: int = 3, embed_dim: int = 256,
+                 num_heads: int = 4, num_layers: int = 4,
+                 dropout: float = 0.1):
+        super().__init__()
+        assert img_size % patch_size == 0
+        self.patch_size = patch_size
+        self.num_patches = (img_size // patch_size) ** 2  # 64/8 = 8 → 64 patches
+        patch_dim = in_channels * patch_size * patch_size  # 3*8*8=192
+
+        self.patch_proj = nn.Linear(patch_dim, embed_dim)
+        self.pos_embed = nn.Parameter(
+            torch.randn(1, self.num_patches, embed_dim) * 0.02)
+        self.dropout = nn.Dropout(dropout)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim, nhead=num_heads,
+            dim_feedforward=embed_dim * 4, dropout=dropout,
+            activation='gelu', batch_first=True, norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_layers)
+        self.norm = nn.LayerNorm(embed_dim)
+
+        self.out_dim = embed_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, H, W, C) uint8
+        x = x.float() / 255.0                       # (B, H, W, C)
+        B, H, W, C = x.shape
+        P = self.patch_size
+
+        # (B, H, W, C) → (B, nH, P, nW, P, C) → (B, nH*nW, P*P*C)
+        x = x.reshape(B, H // P, P, W // P, P, C)
+        x = x.permute(0, 1, 3, 2, 4, 5).reshape(
+            B, self.num_patches, -1)                 # (B, N, patch_dim)
+
+        x = self.patch_proj(x) + self.pos_embed      # (B, N, embed_dim)
+        x = self.dropout(x)
+        x = self.transformer(x)                       # (B, N, embed_dim)
+        x = self.norm(x)
+        x = x.mean(dim=1)                             # (B, embed_dim)  global avg pool
+        return x
+
+
 class StudentPolicy(nn.Module):
     """Unified student policy for both proprio-MLP and image-CNN encoders,
     with continuous (Tanh) or discrete (logits) output heads."""
@@ -120,11 +271,33 @@ class StudentPolicy(nn.Module):
             self.register_buffer('obs_std',  obs_std.float())
             self.encoder = None                     # inline in forward
             self.input_proj = nn.Linear(config.obs_dim, config.hidden)
-        else:  # 'cnn'
+        elif config.encoder_type == 'cnn':
             channels = config.cnn_channels or (32, 64, 64)
             self.encoder = ImageEncoder(channels, config.cnn_kernel,
                                         config.img_channels)
             self.input_proj = nn.Linear(self.encoder.out_dim, config.hidden)
+        elif config.encoder_type == 'resnet':
+            channels = config.cnn_channels or (32, 64, 64)
+            self.encoder = ResNetEncoder(channels, config.cnn_kernel,
+                                         config.img_channels)
+            self.input_proj = nn.Linear(self.encoder.out_dim, config.hidden)
+        elif config.encoder_type == 'vgg':
+            channels = config.cnn_channels or (32, 64, 64)
+            self.encoder = VGGEncoder(channels, config.cnn_kernel,
+                                      config.img_channels)
+            self.input_proj = nn.Linear(self.encoder.out_dim, config.hidden)
+        elif config.encoder_type == 'transformer':
+            self.encoder = TransformerEncoder(
+                img_size=64, patch_size=config.vit_patch_size,
+                in_channels=config.img_channels,
+                embed_dim=config.vit_embed_dim,
+                num_heads=config.vit_num_heads,
+                num_layers=config.vit_num_layers,
+                dropout=config.dropout,
+            )
+            self.input_proj = nn.Linear(self.encoder.out_dim, config.hidden)
+        else:
+            raise ValueError(f"Unknown encoder_type: {config.encoder_type}")
 
         # ── Residual backbone ────────────────────────────────────────────
         self.blocks = nn.Sequential(
